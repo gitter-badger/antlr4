@@ -64,6 +64,7 @@ import org.antlr.v4.tool.GrammarSemanticsMessage;
 import org.antlr.v4.tool.LexerGrammar;
 import org.antlr.v4.tool.Rule;
 import org.junit.Before;
+import org.junit.BeforeClass;
 import org.junit.rules.TestRule;
 import org.junit.rules.TestWatcher;
 import org.junit.rules.Timeout;
@@ -72,15 +73,7 @@ import org.stringtemplate.v4.ST;
 import org.stringtemplate.v4.STGroup;
 import org.stringtemplate.v4.STGroupString;
 
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
+import java.io.*;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -108,6 +101,8 @@ public abstract class BaseTest {
 
 	public String tmpdir = null;
 	public String parserpkgdir = null; // this is where the parser package is stored, typically inside the tmpdir
+	private static File runtimeTmpDir = null;
+	private static final String GO_RUNTIME_IMPORT_PATH = "github.com/pboyer/antlr4/runtime/Go/antlr"; // TODO: Change this before merging with upstream
 
 	/**
 	 * If error during parser execution, store stderr here; can't return stdout
@@ -128,6 +123,54 @@ public abstract class BaseTest {
 
 	@org.junit.Rule
 	public final Timeout eachTimeout = new Timeout(60000);
+
+	/**
+	 * Copies all files from go runtime to a temporary folder that is inside a valid GOPATH project structure.
+	 * Recursively sets deleteOnExit on all temporary files and directories.
+	 */
+	@BeforeClass
+	public static void setupGoRuntime() throws Exception {
+		runtimeTmpDir = new File(System.getProperty("java.io.tmpdir"), "antlr-goruntime-tmpgopath-"
+				+ Long.toHexString(System.nanoTime()));
+		if (!runtimeTmpDir.mkdir()) {
+			throw new Exception("Could not create temp directory for Go runtime: " + runtimeTmpDir);
+		}
+		runtimeTmpDir.deleteOnExit();
+
+		ArrayList<String> pathsegments = new ArrayList<String>();
+		pathsegments.add("src");
+		pathsegments.addAll(Arrays.asList(GO_RUNTIME_IMPORT_PATH.split("/")));
+		File tmpPackageDir = runtimeTmpDir;
+		for (String pathsegment : pathsegments) {
+			tmpPackageDir = new File(tmpPackageDir, pathsegment);
+			if (!tmpPackageDir.mkdir()) {
+				throw new Exception("Could not create temp directory for Go runtime: " + tmpPackageDir);
+			}
+			tmpPackageDir.deleteOnExit();
+		}
+
+		File[] runtimeFiles = new File(locateRuntime(), "antlr").listFiles();
+		if (runtimeFiles == null) {
+			throw new Exception("Go runtime file list is empty.");
+		}
+		for (File runtimeFile : runtimeFiles) {
+			File dest = new File(tmpPackageDir, runtimeFile.getName());
+			copyFile(runtimeFile, dest);
+			dest.deleteOnExit();
+		}
+	}
+
+	private static void copyFile(File source, File dest) throws IOException {
+		InputStream is = new FileInputStream(source);
+		OutputStream os = new FileOutputStream(dest);
+		byte[] buf = new byte[1 << 10];
+		int l;
+		while ((l = is.read(buf)) > 0) {
+			os.write(buf, 0, l);
+		}
+		is.close();
+		os.close();
+	}
 
 	@Before
 	public void setUp() throws Exception {
@@ -385,27 +428,21 @@ public abstract class BaseTest {
 	}
 
 	public String execModule(String fileName) {
-		String goPath = locateGo();
-		String runtimePath = locateRuntime();
-		String modulePath = new File(new File(tmpdir), fileName)
-				.getAbsolutePath();
-		String inputPath = new File(new File(tmpdir), "input")
-				.getAbsolutePath();
+		String goExecutable = locateGo();
+		String modulePath = new File(new File(tmpdir), fileName).getAbsolutePath();
+		String inputPath = new File(new File(tmpdir), "input").getAbsolutePath();
 		try {
-			ProcessBuilder builder = new ProcessBuilder(goPath, "run", modulePath,
-					inputPath);
-			String gopath = builder.environment().get("GOPATH");
-			String path = runtimePath + File.pathSeparator + tmpdir;
-			if (gopath != null && gopath.length() > 0) {
-				path = gopath + File.pathSeparator + path;
+			ProcessBuilder builder = new ProcessBuilder(goExecutable, "run", modulePath, inputPath);
+			String gopath = tmpdir + File.pathSeparatorChar + runtimeTmpDir.getPath();
+			String gopathOriginal = builder.environment().get("GOPATH");
+			if (gopathOriginal != null && gopathOriginal.length() > 0) {
+				gopath = gopath + File.pathSeparatorChar + gopathOriginal;
 			}
-			builder.environment().put("GOPATH", path);
+			builder.environment().put("GOPATH", gopath);
 			builder.directory(new File(tmpdir));
 			Process process = builder.start();
-			StreamVacuum stdoutVacuum = new StreamVacuum(
-					process.getInputStream());
-			StreamVacuum stderrVacuum = new StreamVacuum(
-					process.getErrorStream());
+			StreamVacuum stdoutVacuum = new StreamVacuum(process.getInputStream());
+			StreamVacuum stderrVacuum = new StreamVacuum(process.getErrorStream());
 			stdoutVacuum.start();
 			stderrVacuum.start();
 			process.waitFor();
@@ -464,7 +501,7 @@ public abstract class BaseTest {
 		return prop;
 	}
 
-	private String locateRuntime() {
+	private static String locateRuntime() {
 		final ClassLoader loader = Thread.currentThread().getContextClassLoader();
 		final URL runtimeSrc = loader.getResource("Go");
 		if ( runtimeSrc==null ) {
