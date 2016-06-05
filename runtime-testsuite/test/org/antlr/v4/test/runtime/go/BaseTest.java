@@ -96,11 +96,8 @@ public abstract class BaseTest {
 	// private static final Logger LOGGER =
 	// Logger.getLogger(BaseTest.class.getName());
 
-	public static final String newline = System.getProperty("line.separator");
-	public static final String pathSep = System.getProperty("path.separator");
-
-	public String tmpdir = null;
-	public String parserpkgdir = null; // this is where the parser package is stored, typically inside the tmpdir
+	public File tmpdir = null;
+	public File parserpkgdir = null; // this is where the parser package is stored, typically inside the tmpdir
 	private static File runtimeTmpDir = null;
 	private static final String GO_RUNTIME_IMPORT_PATH = "github.com/pboyer/antlr4/runtime/Go/antlr"; // TODO: Change this before merging with upstream
 
@@ -132,6 +129,7 @@ public abstract class BaseTest {
 	public static void setupGoRuntime() throws Exception {
 		runtimeTmpDir = new File(System.getProperty("java.io.tmpdir"), "antlr-goruntime-tmpgopath-"
 				+ Long.toHexString(System.nanoTime()));
+
 		if (!runtimeTmpDir.mkdir()) {
 			throw new Exception("Could not create temp directory for Go runtime: " + runtimeTmpDir);
 		}
@@ -140,6 +138,7 @@ public abstract class BaseTest {
 		ArrayList<String> pathsegments = new ArrayList<String>();
 		pathsegments.add("src");
 		pathsegments.addAll(Arrays.asList(GO_RUNTIME_IMPORT_PATH.split("/")));
+
 		File tmpPackageDir = runtimeTmpDir;
 		for (String pathsegment : pathsegments) {
 			tmpPackageDir = new File(tmpPackageDir, pathsegment);
@@ -149,7 +148,7 @@ public abstract class BaseTest {
 			tmpPackageDir.deleteOnExit();
 		}
 
-		File[] runtimeFiles = new File(locateRuntime(), "antlr").listFiles();
+		File[] runtimeFiles = locateRuntime().listFiles();
 		if (runtimeFiles == null) {
 			throw new Exception("Go runtime file list is empty.");
 		}
@@ -163,9 +162,9 @@ public abstract class BaseTest {
 	private static void copyFile(File source, File dest) throws IOException {
 		InputStream is = new FileInputStream(source);
 		OutputStream os = new FileOutputStream(dest);
-		byte[] buf = new byte[1 << 10];
+		byte[] buf = new byte[4 << 10];
 		int l;
-		while ((l = is.read(buf)) > 0) {
+		while ((l = is.read(buf)) > -1) {
 			os.write(buf, 0, l);
 		}
 		is.close();
@@ -177,31 +176,27 @@ public abstract class BaseTest {
 		// new output dir for each test
 		String prop = System.getProperty("antlr-go-test-dir");
 		if (prop != null && prop.length() > 0)
-			tmpdir = prop;
+			tmpdir = new File(prop);
 		else
-			tmpdir = new File(System.getProperty("java.io.tmpdir"), getClass()
-					.getSimpleName() + "-" + System.currentTimeMillis())
-					.getAbsolutePath();
+			tmpdir = new File(System.getProperty("java.io.tmpdir"),
+					getClass().getSimpleName() + "-" + System.currentTimeMillis());
 
-		File dir = new File(tmpdir);
-		if (dir.exists())
-			this.eraseFiles(dir);
+		if (tmpdir.exists())
+			this.eraseFiles(tmpdir);
 
-		parserpkgdir = tmpdir + "/parser";
+		parserpkgdir = new File(tmpdir, "parser");
 
-		File pkgdir = new File(parserpkgdir);
-		if (pkgdir.exists())
-			this.eraseFiles(pkgdir);
+		if (parserpkgdir.exists()) {
+			this.eraseFiles(parserpkgdir);
+		}
 	}
 
 	protected org.antlr.v4.Tool newTool(String[] args) {
-		Tool tool = new Tool(args);
-		return tool;
+		return new Tool(args);
 	}
 
 	protected Tool newTool() {
-		org.antlr.v4.Tool tool = new Tool(new String[] { "-o", parserpkgdir });
-		return tool;
+		return new Tool(new String[]{"-o", parserpkgdir.getPath()});
 	}
 
 	protected ATN createATN(Grammar g, boolean useSerializer) {
@@ -306,10 +301,10 @@ public abstract class BaseTest {
 		Collections.addAll(options, extraOptions);
 		options.add("-Dlanguage=Go");
 		options.add("-o");
-		options.add(parserpkgdir);
+		options.add(parserpkgdir.getPath());
 		options.add("-lib");
-		options.add(parserpkgdir);
-		options.add(new File(parserpkgdir, grammarFileName).toString());
+		options.add(parserpkgdir.getPath());
+		options.add(new File(parserpkgdir, grammarFileName).getPath());
 
 		final String[] optionsA = new String[options.size()];
 		options.toArray(optionsA);
@@ -429,17 +424,17 @@ public abstract class BaseTest {
 
 	public String execModule(String fileName) {
 		String goExecutable = locateGo();
-		String modulePath = new File(new File(tmpdir), fileName).getAbsolutePath();
-		String inputPath = new File(new File(tmpdir), "input").getAbsolutePath();
+		String modulePath = new File(tmpdir, fileName).getAbsolutePath();
+		String inputPath = new File(tmpdir, "input").getAbsolutePath();
 		try {
 			ProcessBuilder builder = new ProcessBuilder(goExecutable, "run", modulePath, inputPath);
-			String gopath = tmpdir + File.pathSeparatorChar + runtimeTmpDir.getPath();
+			String gopath = runtimeTmpDir.getPath();
 			String gopathOriginal = builder.environment().get("GOPATH");
 			if (gopathOriginal != null && gopathOriginal.length() > 0) {
 				gopath = gopath + File.pathSeparatorChar + gopathOriginal;
 			}
 			builder.environment().put("GOPATH", gopath);
-			builder.directory(new File(tmpdir));
+			builder.directory(tmpdir);
 			Process process = builder.start();
 			StreamVacuum stdoutVacuum = new StreamVacuum(process.getInputStream());
 			StreamVacuum stderrVacuum = new StreamVacuum(process.getErrorStream());
@@ -473,7 +468,7 @@ public abstract class BaseTest {
 
 		String pathEnv = System.getenv("PATH");
 		if (pathEnv != null) {
-			paths.addAll(Arrays.asList(pathEnv.split(pathSep)));
+			paths.addAll(Arrays.asList(pathEnv.split(File.pathSeparator)));
 		}
 
 		// OS specific default locations of binary dist as last resort
@@ -501,13 +496,17 @@ public abstract class BaseTest {
 		return prop;
 	}
 
-	private static String locateRuntime() {
+	private static File locateRuntime() {
 		final ClassLoader loader = Thread.currentThread().getContextClassLoader();
 		final URL runtimeSrc = loader.getResource("Go");
 		if ( runtimeSrc==null ) {
 			throw new RuntimeException("Cannot find Go ANTLR runtime");
 		}
-		return runtimeSrc.getPath();
+		File runtimeDir = new File(runtimeSrc.getPath(), "antlr");
+		if (!runtimeDir.exists()) {
+			throw new RuntimeException("Cannot find Go ANTLR runtime");
+		}
+		return runtimeDir;
 	}
 
 	public void testErrors(String[] pairs, boolean printTree) {
@@ -776,7 +775,7 @@ public abstract class BaseTest {
 		}
 	}
 
-	public static void writeFile(String dir, String fileName, String content) {
+	public static void writeFile(File dir, String fileName, String content) {
 		try {
 			File f = new File(dir, fileName);
 			FileWriter w = new FileWriter(f);
@@ -805,9 +804,8 @@ public abstract class BaseTest {
 		}
 	}
 
-	protected void mkdir(String dir) {
-		File f = new File(dir);
-		f.mkdirs();
+	protected void mkdir(File dir) {
+		dir.mkdirs();
 	}
 
 	protected void writeParserTestFile(String parserName, String lexerName,
@@ -905,19 +903,24 @@ public abstract class BaseTest {
 	}
 
 	protected void eraseFiles(final String filesEndingWith) {
-		File tmpdirF = new File(tmpdir);
-		String[] files = tmpdirF.list();
-		for (int i = 0; files != null && i < files.length; i++) {
-			if (files[i].endsWith(filesEndingWith)) {
-				new File(tmpdir + "/" + files[i]).delete();
+		File[] files = tmpdir.listFiles(new FileFilter() {
+			@Override
+			public boolean accept(File pathname) {
+				return pathname.getName().endsWith(filesEndingWith);
 			}
+		});
+		for (File file : files) {
+			file.delete();
 		}
 	}
 
 	protected void eraseFiles(File dir) {
-		String[] files = dir.list();
-		for (int i = 0; files != null && i < files.length; i++) {
-			new File(dir, files[i]).delete();
+		File[] files = dir.listFiles();
+		if (files == null) {
+			return;
+		}
+		for (File file : files) {
+			file.delete();
 		}
 	}
 
@@ -928,10 +931,9 @@ public abstract class BaseTest {
 		if (prop != null && prop.length() > 0)
 			doErase = Boolean.getBoolean(prop);
 		if (doErase) {
-			File tmpdirF = new File(tmpdir);
-			if (tmpdirF.exists()) {
-				eraseFiles(tmpdirF);
-				tmpdirF.delete();
+			if (tmpdir.exists()) {
+				eraseFiles(tmpdir);
+				tmpdir.delete();
 			}
 		}
 	}
